@@ -4,6 +4,7 @@ pragma solidity ^0.8.26;
 import {DecentralizedStableCoin} from "./DecentralizedStableCoin.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {AggregatorV3Interface} from "../lib/chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
 contract DSCEngine is ReentrancyGuard {
     /////////////////////
@@ -18,10 +19,24 @@ contract DSCEngine is ReentrancyGuard {
     // STATE VARIABLEs //
     /////////////////////
     /**
+     * @notice 喂价精度调整常量
+     * @dev 用于调整 Chainlink 价格预言机返回的价格精度
+     */
+    uint256 private constant ADDITIONAL_FEED_PRECISION = 1e10;
+
+    /**
+     * @notice 基础精度常量
+     * @dev 用于价格计算的基础精度单位
+     */
+    uint256 private constant PRECISION = 1e18;
+
+    /**
      * @notice 代币地址到价格预言机地址的映射
      * @dev 用于存储每个代币对应的价格预言机地址
      */
     mapping(address token => address priceFeed) private s_priceFeeds;
+    //存储所有被允许作为抵押品的代币地址数组
+    address[] private s_collateralTokens;
 
     /**
      * @notice 用户抵押品映射
@@ -95,10 +110,15 @@ contract DSCEngine is ReentrancyGuard {
         address _dscAddress
     ) {
         // USD price feed address
-
         // 检查参数长度是否相等
         if (tokenAddresses.length != priceFeedAddresses.length) {
             revert DSCEngine__TokenAddressesAndPriceFeedAddressesMustBeTheSameLength();
+        }
+
+        // 遍历数组，将代币地址和价格预言机地址存入映射
+        for (uint256 i = 0; i < tokenAddresses.length; i++) {
+            s_priceFeeds[tokenAddresses[i]] = priceFeedAddresses[i];
+            s_collateralTokens.push(tokenAddresses[i]);
         }
 
         i_dsc = DecentralizedStableCoin(_dscAddress);
@@ -184,6 +204,13 @@ contract DSCEngine is ReentrancyGuard {
     //  PRIVATE_INTERNAL_VIEW_FUNCTIONS //
     //////////////////////////////////////
 
+    /**
+     * @notice 获取用户账户信息
+     * @dev 返回用户铸造的DSC数量和抵押品的美元价值
+     * @param user 用户地址
+     * @return totalDscMinted 用户铸造的DSC总量
+     * @return collateralValueInUsd 用户抵押品的美元价值
+     */
     function _getUserAccountInformation(
         address user
     )
@@ -192,7 +219,10 @@ contract DSCEngine is ReentrancyGuard {
         returns (uint256 totalDscMinted, uint256 collateralValueInUsd)
     {
         // 1. 获取用户铸造的DSC数量
+        totalDscMinted = s_DSCMinded[user];
         // 2. 获取用户抵押品的价值
+        collateralValueInUsd = getAccountCollateralValue(user);
+
         // 3. 返回用户的DSC数量和抵押品价值
     }
 
@@ -212,5 +242,45 @@ contract DSCEngine is ReentrancyGuard {
     function _revertIfHealthFactorIsBroken(address user) internal view {
         // 1. 检查用户的健康因子
         // 2. 如果健康因子低于1，那么就抛出错误
+    }
+
+    //////////////////////////////////////
+    //  PUBLIC_EXTERNAL_VIEW_FUNCTIONS  //
+    //////////////////////////////////////
+    /**
+     * @notice 获取用户抵押品的总价值
+     * @param user 用户地址
+     *
+     */
+    function getAccountCollateralValue(
+        address user
+    ) public view returns (uint256 totalCollateralValueInUsd) {
+        for (uint256 i = 0; i < s_collateralTokens.length; i++) {
+            address token = s_collateralTokens[i];
+            uint256 amount = s_collateralDeposited[user][token];
+            totalCollateralValueInUsd += getUsdValue(token, amount);
+        }
+        return totalCollateralValueInUsd;
+    }
+
+    /**
+     * @notice 获取代币的美元价值
+     * @param token 代币地址
+     * @param amount 代币数量
+     * @return 代币的美元价值
+     */
+    function getUsdValue(
+        address token,
+        uint256 amount
+    ) public view returns (uint256) {
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(
+            s_priceFeeds[token]
+        );
+        (, int256 price, , , ) = priceFeed.latestRoundData();
+        // 1 ETH = $1000
+        // The returned value from Chainlink is 8 decimals
+
+        return
+            (uint256(price) * ADDITIONAL_FEED_PRECISION * amount) / PRECISION;
     }
 }
