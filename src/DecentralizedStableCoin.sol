@@ -21,6 +21,12 @@ contract DecentralizedStableCoin is ERC20Burnable, Ownable {
 
     constructor() ERC20("DecentralizedStableCoin", "DSC") Ownable(msg.sender) {}
 
+    /**
+     * @notice 销毁稳定币
+     * @dev 只有合约所有者可以调用此函数
+     * @dev 销毁的金额必须大于0且不能超过调用者的余额
+     * @param _amount 要销毁的稳定币数量
+     */
     function burn(uint256 _amount) public override onlyOwner {
         uint256 balance = balanceOf(msg.sender);
         if (_amount <= 0) {
@@ -33,6 +39,14 @@ contract DecentralizedStableCoin is ERC20Burnable, Ownable {
         super.burn(_amount); // 通知父类调用burn函数
     }
 
+    /**
+     * @notice 铸造稳定币
+     * @dev 只有合约所有者可以调用此函数
+     * @dev 铸造的地址不能为零地址，铸造金额必须大于0
+     * @param _to 接收铸造稳定币的地址
+     * @param _amount 要铸造的稳定币数量
+     * @return 铸造是否成功
+     */
     function mint(
         address _to,
         uint256 _amount
