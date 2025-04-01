@@ -4,15 +4,23 @@ pragma solidity ^0.8.26;
 import {DecentralizedStableCoin} from "./DecentralizedStableCoin.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {AggregatorV3Interface} from "../lib/chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
+import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
 contract DSCEngine is ReentrancyGuard {
     /////////////////////
     // ERROR           //
     /////////////////////
+
+    // 当输入金额为0或负数时抛出错误
     error DSCEngine__MustBeMoreThanZero();
+
+    // 当使用未被允许的代币作为抵押品时抛出错误
     error DSCEngine__NotAllowedToken();
+
+    // 当代币地址数组与价格预言机地址数组长度不匹配时抛出错误
     error DSCEngine__TokenAddressesAndPriceFeedAddressesMustBeTheSameLength();
+
+    // 当代币转账失败时抛出错误
     error DSCEngine__transferFromFailed();
 
     /////////////////////
@@ -172,8 +180,6 @@ contract DSCEngine is ReentrancyGuard {
 
     // 赎回抵押品
     function redeemCollateral() external {}
-
-    //
 
     /**
      * @notice 铸造DSC
