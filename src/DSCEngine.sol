@@ -23,6 +23,12 @@ contract DSCEngine is ReentrancyGuard {
     // 当代币转账失败时抛出错误
     error DSCEngine__transferFromFailed();
 
+    // 当健康因子低于最小阈值时抛出错误
+    error DSCEngine__HealthFactorIsBroken(uint256 userHealthFactor);
+
+    // 当铸造DSC代币失败时抛出错误
+    error DSCEngine__MintFailed();
+
     /////////////////////
     // STATE VARIABLEs //
     /////////////////////
@@ -37,6 +43,9 @@ contract DSCEngine is ReentrancyGuard {
      * @dev 用于价格计算的基础精度单位
      */
     uint256 private constant PRECISION = 1e18;
+    uint256 private constant LIQUIDATION_THRESHOLD = 50;
+    uint256 private constant LIQUIDATION_PRECISION = 100;
+    uint256 private constant MIN_HEALTH_FACTOR = 1;
 
     /**
      * @notice 代币地址到价格预言机地址的映射
@@ -70,10 +79,30 @@ contract DSCEngine is ReentrancyGuard {
     /////////////////////
     // EVENT           //
     /////////////////////
+    /**
+     * @notice 存入抵押品事件
+     * @dev 当用户存入抵押品时触发
+     * @param user 存入抵押品的用户地址
+     * @param collateralToken 抵押品代币地址
+     * @param collateralAmount 存入的抵押品数量
+     */
     event CollateralDeposited(
         address indexed user,
         address indexed collateralToken,
         uint256 indexed collateralAmount
+    );
+
+    /**
+     * @notice 赎回抵押品事件
+     * @dev 当用户赎回抵押品时触发
+     * @param redeemedFrom 赎回抵押品的用户地址
+     * @param redeemedCollateralToken 被赎回的抵押品代币地址
+     * @param redeemedCollateralAmount 赎回的抵押品数量
+     */
+    event CollateralRedeemed(
+        address indexed redeemedFrom,
+        address indexed redeemedCollateralToken,
+        uint256 redeemedCollateralAmount
     );
 
     /////////////////////
@@ -136,8 +165,24 @@ contract DSCEngine is ReentrancyGuard {
     // EXTERNAL_FUNCTIONS       //
     //////////////////////////////
 
-    // 抵押并铸造DSC
-    function depositCollateralAndMintDsc() external {}
+    /**
+     * @notice 存入抵押品并铸造DSC代币
+     * @param tokenCollateralAddress 抵押品代币地址
+     * @param tokenCollateralAmount 抵押品数量
+     * @param amountDscToMint 要铸造的DSC代币数量
+     */
+    function depositCollateralAndMintDsc(
+        address tokenCollateralAddress,
+        uint256 tokenCollateralAmount,
+        uint256 amountDscToMint
+    ) external {
+        depositCollateral(
+            tokenCollateralAddress,
+            tokenCollateralAmount,
+            msg.sender
+        );
+        mintDsc(amountDscToMint);
+    }
 
     /**
      * @notice CEI 检查-影响-交互
@@ -151,7 +196,7 @@ contract DSCEngine is ReentrancyGuard {
         uint256 _collateralAmount,
         address _borrower
     )
-        external
+        public
         moreThanZero(_collateralAmount)
         isAllowedToken(_collateralToken)
         nonReentrant // 防止重入攻击
@@ -175,11 +220,62 @@ contract DSCEngine is ReentrancyGuard {
         }
     }
 
-    // 赎回抵押品并销毁DSC
-    function redeemCollateralForDsc() external {}
+    /**
+     * @notice 赎回抵押品并销毁DSC代币
+     * @dev 该函数允许用户同时执行两个操作:
+     * 1. 销毁指定数量的DSC代币
+     * 2. 赎回指定数量的抵押品
+     * @dev 函数会自动检查操作后的健康因子是否满足要求
+     * @param tokenCollateralAddress 要赎回的抵押品代币地址
+     * @param amountCollateral 要赎回的抵押品数量
+     * @param amountDscToBurn 要销毁的DSC代币数量
+     */
+    function redeemCollateralForDsc(
+        address tokenCollateralAddress,
+        uint256 amountCollateral,
+        uint256 amountDscToBurn
+    ) external {
+        burnDsc(amountDscToBurn);
+        redeemCollateral(tokenCollateralAddress, amountCollateral);
+        // redeemCollateral already checks for health factor
+    }
 
-    // 赎回抵押品
-    function redeemCollateral() external {}
+    /**
+     * @notice 赎回抵押品
+     * @notice 1. 他们的HealthFactor 必须高于1
+     * @notice 2. 可以部分赎回
+     * @param tokenCollateralAddress 抵押品代币地址
+     * @param amountCollateral 要赎回的抵押品数量
+     */
+
+    // CEI: check - effect - interaction
+    function redeemCollateral(
+        address tokenCollateralAddress,
+        uint256 amountCollateral
+    ) public moreThanZero(amountCollateral) nonReentrant {
+        s_collateralDeposited[msg.sender][
+            tokenCollateralAddress
+        ] -= amountCollateral;
+        emit CollateralRedeemed(
+            msg.sender,
+            tokenCollateralAddress,
+            amountCollateral
+        );
+        // _collateralHealthFactor()
+        bool success = IERC20(tokenCollateralAddress).transfer(
+            msg.sender,
+            amountCollateral
+        );
+        if (!success) {
+            revert DSCEngine__transferFromFailed();
+        }
+        _revertIfHealthFactorIsBroken(msg.sender);
+    }
+
+    // $100 ETH -> $20DSC 【质押100美金以太坊，借贷出20美金DSC】
+    // 100 break 【想要赎回100美金的ETH】
+    // 1.burn DSC 【 销毁DSC 】
+    // 2.redeem ETH 【 赎回ETH 】
 
     /**
      * @notice 铸造DSC
@@ -189,16 +285,30 @@ contract DSCEngine is ReentrancyGuard {
      */
     function mintDsc(
         uint256 amountDscToMint
-    ) external moreThanZero(amountDscToMint) nonReentrant {
+    ) public moreThanZero(amountDscToMint) nonReentrant {
         // 记录用户铸造的DSC数量，存入映射
         s_DSCMinded[msg.sender] += amountDscToMint;
 
         // 一旦抵押品价值低于铸造的DSC数量回滚
         _revertIfHealthFactorIsBroken(msg.sender);
+        bool minted = i_dsc.mint(msg.sender, amountDscToMint);
+        if (!minted) {
+            revert DSCEngine__MintFailed();
+        }
     }
 
     // 销毁DSC
-    function burnDsc() external {}
+    function burnDsc(uint256 amount) public moreThanZero(amount) {
+        s_DSCMinded[msg.sender] -= amount;
+        // _revertIfHealthFactorIsBroken(msg.sender);
+        bool success = i_dsc.transferFrom(msg.sender, address(this), amount);
+        // this conditional is hypothetically unnecessary
+        if (success) {
+            revert DSCEngine__transferFromFailed();
+        }
+        i_dsc.burn(amount);
+        _revertIfHealthFactorIsBroken(msg.sender);
+    }
 
     // 清算
     function liquidate() external {}
@@ -235,6 +345,7 @@ contract DSCEngine is ReentrancyGuard {
     /**
      * @notice 计算用户的健康因子，如果健康因子小于1，则调用 liquidate() 函数
      * @param user 用户地址
+     * @return 用户的健康因子
      */
     function _healthFactor(address user) private view returns (uint256) {
         // total DSC minted DSC的总价值
@@ -243,11 +354,21 @@ contract DSCEngine is ReentrancyGuard {
             uint256 totalDscMinted,
             uint256 collateralValueInUsd
         ) = _getUserAccountInformation(user);
+        uint256 collateralAdjustedForThreshold = (collateralValueInUsd *
+            LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
+
+        // 1000ETH  1000 * 50 = 5000  ;  50000 / 100 = 500
+        // 150 * 50 = 7500  ;  7500 / 100 = 75
+        return (collateralAdjustedForThreshold * PRECISION) / totalDscMinted;
     }
 
+    // 1. 检查用户的健康因子
+    // 2. 如果健康因子低于1，那么就抛出错误
     function _revertIfHealthFactorIsBroken(address user) internal view {
-        // 1. 检查用户的健康因子
-        // 2. 如果健康因子低于1，那么就抛出错误
+        uint256 userHealthFactor = _healthFactor(user);
+        if (userHealthFactor < MIN_HEALTH_FACTOR) {
+            revert DSCEngine__HealthFactorIsBroken(userHealthFactor);
+        }
     }
 
     //////////////////////////////////////
@@ -288,5 +409,15 @@ contract DSCEngine is ReentrancyGuard {
 
         return
             (uint256(price) * ADDITIONAL_FEED_PRECISION * amount) / PRECISION;
+    }
+
+    function getAccountInformation(
+        address user
+    )
+        external
+        view
+        returns (uint256 totalDscMinted, uint256 collateralValueInUsd)
+    {
+        return _getUserAccountInformation(user);
     }
 }
