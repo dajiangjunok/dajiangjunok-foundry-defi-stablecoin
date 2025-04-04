@@ -17,13 +17,13 @@ contract DeployDecentralizedStableCoin is Script {
             address wbtcUsdPriceFeed,
             address weth,
             address wbtc,
-            uint256 deployKey
+            uint256 deployerKey
         ) = helperConfig.activeNetworkConfig();
 
         tokenAddresses = [weth, wbtc];
         priceFeedAddresses = [wethUsdPriceFeed, wbtcUsdPriceFeed];
 
-        vm.startBroadcast();
+        vm.startBroadcast(deployerKey);
         DecentralizedStableCoin decentralizedStableCoin = new DecentralizedStableCoin();
         DSCEngine dscEngine = new DSCEngine(
             tokenAddresses,
