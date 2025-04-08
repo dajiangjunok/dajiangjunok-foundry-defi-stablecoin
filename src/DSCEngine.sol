@@ -5,6 +5,7 @@ import {DecentralizedStableCoin} from "./DecentralizedStableCoin.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
+import {OracleLib} from "./libraries/OracleLib.sol";
 
 /**
  * @title DSCEngine 去中心化稳定币引擎合约
@@ -48,6 +49,11 @@ contract DSCEngine is ReentrancyGuard {
      * @dev 在尝试清算健康状况良好的用户时会触发此错误
      */
     error DSCEngine__HealthFactorOk();
+
+    /////////////////////
+    // TYPES           //
+    /////////////////////
+    using OracleLib for AggregatorV3Interface;
 
     /////////////////////
     // STATE VARIABLEs //
@@ -481,7 +487,7 @@ contract DSCEngine is ReentrancyGuard {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(
             s_priceFeeds[token]
         );
-        (, int256 price, , , ) = priceFeed.latestRoundData();
+        (, uint256 price, , , ) = priceFeed.staleCheckLatestRoundData();
         // 2. 计算对应的代币数量
         // 3. 精度调整
         // ($10e18 * 1e18) / ($2000e8 * 1e10) =   5e15
@@ -520,7 +526,7 @@ contract DSCEngine is ReentrancyGuard {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(
             s_priceFeeds[token]
         );
-        (, int256 price, , , ) = priceFeed.latestRoundData();
+        (, uint256 price, , , ) = priceFeed.staleCheckLatestRoundData();
         // 1 ETH = $1000
         // The returned value from Chainlink is 8 decimals
 
